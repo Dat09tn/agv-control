@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<title>AGV Serial Bridge - Test</title>
+<style>
+  body { font-family: Segoe UI, sans-serif; margin: 16px; background:#1e1e1e; color:#ddd; }
+  button, select, input { padding:6px 10px; margin:2px; }
+  #log { background:#000; color:#0f0; height:300px; overflow:auto; padding:8px;
+         font-family: Consolas, monospace; font-size:13px; white-space:pre-wrap; }
+  .st { font-weight:bold; }
+  .ok { color:#4caf50; } .err { color:#f44336; }
+  fieldset { margin-top:10px; border:1px solid #555; }
+  .row { display:flex; gap:24px; align-items:flex-start; flex-wrap:wrap; }
+  /* D-pad */
+  #pad { display:grid; grid-template-columns:repeat(3,80px); grid-template-rows:repeat(3,80px); gap:6px; user-select:none; }
+  #pad button { font-size:28px; margin:0; border-radius:10px; background:#333; color:#fff; border:2px solid #666; touch-action:none; }
+  #pad button.on { background:#1976d2; border-color:#90caf9; }
+  #pad .stop { background:#c62828; font-size:16px; font-weight:bold; }
+  #tele.on { color:#4caf50; } #tele { color:#f44336; font-weight:bold; }
+  #cur { font-family:Consolas,monospace; font-size:18px; }
+  kbd { background:#444; border-radius:4px; padding:1px 6px; border:1px solid #777; }
+</style>
+</head>
+<body>
+<h3>AGV Điều Khiển & Test Động Cơ</h3>
+
+<!-- Chế độ 1: Trực tiếp qua Trình duyệt (Web Serial API) -->
+<div style="background:#263238; border:1px solid #00acc1; border-radius:8px; padding:10px 14px; margin-bottom:12px;">
+  <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+    <b style="color:#00e5ff; font-size:15px;">⚡ Chế độ 1: KẾT NỐI TRỰC TIẾP USB (Không cần Python)</b>
+    <span id="direct_st" class="st err">Chưa kết nối</span>
+  </div>
+  <div style="margin-top:6px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+    <select id="direct_baud">
+      <option value="9600" selected>9600 baud</option>
+      <option value="19200">19200 baud</option>
+      <option value="57600">57600 baud</option>
+      <option value="115200">115200 baud</option>
+    </select>
+    <button id="btn_direct_connect" style="background:#00897b; color:#fff; font-weight:bold; border-radius:4px;" onclick="toggleDirectSerial()">
+      🔌 Chọn Cổng USB & Kết Nối
+    </button>
+    <small style="color:#aaa;">(Yêu cầu Chrome / Edge / Cốc Cốc mở qua Live Server hoặc HTTPS)</small>
+  </div>
+</div>
+
+<!-- Chế độ 2: Cầu nối Python WebSocket (Cách cũ dự phòng) -->
+<details style="background:#222; border:1px solid #444; border-radius:6px; padding:8px 12px; margin-bottom:12px;">
+  <summary style="cursor:pointer; color:#bbb;">🛠️ Chế độ 2: Cầu nối Python WebSocket (Dự phòng khi mở trực tiếp file://)</summary>
+  <div style="margin-top:8px;">
+    <span id="ws" class="st err">(WS: chưa kết nối)</span> &nbsp;
+    <select id="port"></select>
+    <select id="baud">
+      <option>9600</option><option>19200</option><option>57600</option><option>115200</option>
+    </select>
+    <button onclick="send({cmd:'list'})">Làm mới cổng</button>
+    <button onclick="connectCom()">Kết nối</button>
+    <button onclick="send({cmd:'disconnect'})">Ngắt</button>
+    <span id="st" class="st err">COM: chưa kết nối</span>
+  </div>
+</details>
+
+<div>
+  <button onclick="cmd('start')">START</button>
+  <button onclick="cmd('stop')">STOP</button>
+  <button onclick="cmd('120s')">Bật/Tắt test 120s</button>
+  <input id="txt" placeholder="Lệnh tùy ý..." onkeydown="if(event.key==='Enter')cmd(this.value)">
+  <button onclick="cmd($('txt').value)">Gửi</button>
+  <button onclick="$('log').textContent=''">Xóa log</button>
+</div>
+
+<!-- ================= LÁI XE BẰNG BÀN PHÍM / MÀN HÌNH ================= -->
+<fieldset>
+  <legend>LÁI XE (giữ nút để chạy, thả ra là dừng) – không bám line</legend>
+  <div class="row">
+    <div id="pad">
+      <button data-k="ql" title="Tiến + rẽ trái (Q)">↖</button>
+      <button data-k="up" title="Tiến (W / ↑)">▲</button>
+      <button data-k="qr" title="Tiến + rẽ phải (E)">↗</button>
+      <button data-k="left" title="Xoay trái (A / ←)">◀</button>
+      <button class="stop" onclick="teleStop(true)">DỪNG</button>
+      <button data-k="right" title="Xoay phải (D / →)">▶</button>
+      <button data-k="zl" title="Lùi + rẽ trái (Z)">↙</button>
+      <button data-k="down" title="Lùi (S / ↓)">▼</button>
+      <button data-k="zr" title="Lùi + rẽ phải (C)">↘</button>
+    </div>
+    <div>
+      <label style="font-size:16px"><input type="checkbox" id="teleEn" onchange="teleToggle()">
+        Bật điều khiển bằng <b>bàn phím</b></label>
+      <span id="tele">TẮT</span>
+      <p>
+        <kbd>W</kbd>/<kbd>↑</kbd> tiến &nbsp; <kbd>S</kbd>/<kbd>↓</kbd> lùi &nbsp;
+        <kbd>A</kbd>/<kbd>←</kbd> xoay trái &nbsp; <kbd>D</kbd>/<kbd>→</kbd> xoay phải<br>
+        Giữ <kbd>W</kbd>+<kbd>A</kbd> / <kbd>W</kbd>+<kbd>D</kbd> để vừa tiến vừa rẽ &nbsp;
+        <kbd>Shift</kbd> giữ = chạy chậm (½) &nbsp; <kbd>Space</kbd> = DỪNG GẤP<br>
+        Nhấn giữ → xe <b>tăng tốc từ từ</b>; nhả ra → xe <b>giảm tốc từ từ</b> rồi dừng.
+      </p>
+      <div>Tốc độ chạy: <input type="range" id="spd" min="30" max="255" value="120" step="5"
+            oninput="$('spdv').textContent=this.value"> <b id="spdv">120</b></div>
+      <div>Tốc độ xoay: <input type="range" id="trn" min="30" max="255" value="90" step="5"
+            oninput="$('trnv').textContent=this.value"> <b id="trnv">90</b></div>
+      <div>Độ gắt khi rẽ: <input type="range" id="crv" min="10" max="100" value="50" step="5"
+            oninput="$('crvv').textContent=this.value+'%'"> <b id="crvv">50%</b></div>
+      <div>Tăng tốc: <input type="range" id="acc" min="30" max="1000" value="150" step="10"
+            oninput="$('accv').textContent=this.value" onchange="sendAccel()"> <b id="accv">150</b> PWM/s
+        <small>(nhỏ = êm hơn)</small></div>
+      <div>Giảm tốc: <input type="range" id="dec" min="30" max="1000" value="200" step="10"
+            oninput="$('decv').textContent=this.value" onchange="sendAccel()"> <b id="decv">200</b> PWM/s</div>
+      <p>Lệnh hiện tại: <span id="cur">TRÁI 0 | PHẢI 0</span></p>
+    </div>
+  </div>
+</fieldset>
+
+<!-- ================= TEST TỪNG ĐỘNG CƠ ================= -->
+<fieldset>
+  <legend>TEST ĐỘNG CƠ – kê bánh xe lên trước khi test!</legend>
+  <div>
+    Trái: <input type="range" id="sl" min="-255" max="255" value="0" step="5" oninput="$('vl').textContent=this.value">
+    <b id="vl">0</b>
+    &nbsp; Phải: <input type="range" id="sr" min="-255" max="255" value="0" step="5" oninput="$('vr').textContent=this.value">
+    <b id="vr">0</b>
+    <label><input type="checkbox" id="lock" checked> Khóa 2 bánh bằng nhau</label>
+    <button onclick="motorApply()">Áp dụng</button>
+  </div>
+  <div>
+    <button onclick="motor( v(), 0)">Chỉ TRÁI thuận</button>
+    <button onclick="motor(-v(), 0)">Chỉ TRÁI ngược</button>
+    <button onclick="motor(0,  v())">Chỉ PHẢI thuận</button>
+    <button onclick="motor(0, -v())">Chỉ PHẢI ngược</button>
+    <button onclick="cmd('msweep '+v()+' 1')">Sweep tăng dần (tiến)</button>
+    <button onclick="cmd('msweep '+v()+' -1')">Sweep tăng dần (lùi)</button>
+    <button style="background:#c62828;color:#fff;font-weight:bold;padding:8px 24px" onclick="motorStop()">■ DỪNG (Space)</button>
+    <small>(dùng "Tốc độ chạy" ở trên)</small>
+  </div>
+</fieldset>
+
+<div id="log" style="margin-top:10px"></div>
+
+<script>
+// ================= KẾT NỐI TRỰC TIẾP (WEB SERIAL API - KHÔNG CẦN PYTHON) =================
+let directPort = null;
+let directReader = null;
+
+function setDirectStatus(connected, text) {
+  const el = $('direct_st');
+  if (el) {
+    el.textContent = text;
+    el.className = 'st ' + (connected ? 'ok' : 'err');
+  }
+  const btn = $('btn_direct_connect');
+  if (btn) {
+    btn.textContent = connected ? '❌ Ngắt Kết Nối USB' : '🔌 Chọn Cổng USB & Kết Nối';
+    btn.style.background = connected ? '#c62828' : '#00897b';
+  }
+}
+
+async function toggleDirectSerial() {
+  if (directPort) {
+    await disconnectDirectSerial();
+    return;
+  }
+  
+  if (!navigator.serial) {
+    alert("⚠️ Trình duyệt (Chrome/Edge) chặn truy cập cổng USB khi mở qua đường dẫn cục bộ file:// !\n\n" +
+          "👉 Để dùng Web điều khiển trực tiếp mà KHÔNG CẦN CHẠY PYTHON, bạn chỉ cần:\n" +
+          "1. Trong VS Code: Click chuột phải vào file 'bridge_test.html' -> Chọn 'Open with Live Server'.\n" +
+          "2. Hoặc đưa file này lên bất kỳ trang web tĩnh HTTPS nào (như GitHub Pages).\n\n" +
+          "(Nếu mở trực tiếp file://, vui lòng bấm mở rộng Chế độ 2 bên dưới để dùng qua Python Bridge).");
+    return;
+  }
+
+  try {
+    const baudRate = +$('direct_baud').value || 9600;
+    directPort = await navigator.serial.requestPort();
+    await directPort.open({ baudRate: baudRate });
+    setDirectStatus(true, `Đang kết nối trực tiếp (${baudRate} baud)`);
+    log(`## [USB DIRECT] Đã mở cổng USB thành công (${baudRate} baud)`);
+    setTimeout(sendAccel, 3500); // Đợi Mega khởi động lại sau DTR
+    readDirectLoop();
+  } catch (err) {
+    if (err.name !== 'NotFoundError') {
+      log(`!! [USB DIRECT] Lỗi mở cổng: ${err.message}`);
+    }
+    directPort = null;
+    setDirectStatus(false, 'Chưa kết nối');
+  }
+}
+
+async function disconnectDirectSerial() {
+  if (directReader) {
+    try { await directReader.cancel(); } catch (e) {}
+  }
+  if (directPort) {
+    try { await directPort.close(); } catch (e) {}
+  }
+  directPort = null;
+  directReader = null;
+  setDirectStatus(false, 'Chưa kết nối');
+  log('## [USB DIRECT] Đã ngắt kết nối USB.');
+}
+
+async function readDirectLoop() {
+  let textDecoder = new TextDecoderStream();
+  let readableStreamClosed = directPort.readable.pipeTo(textDecoder.writable);
+  let reader = textDecoder.readable.getReader();
+  directReader = reader;
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) {
+        buffer += value;
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        for (const line of lines) {
+          const l = line.trim();
+          if (l) log(l);
+        }
+      }
+    }
+  } catch (err) {
+    if (directPort) {
+      log(`!! [USB DIRECT] Mất kết nối: ${err.message}`);
+      disconnectDirectSerial();
+    }
+  } finally {
+    try { reader.releaseLock(); } catch(e){}
+    await readableStreamClosed.catch(() => {});
+  }
+}
+
+async function writeDirectSerial(str) {
+  if (!directPort || !directPort.writable) return false;
+  try {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(str);
+    const writer = directPort.writable.getWriter();
+    await writer.write(data);
+    writer.releaseLock();
+    return true;
+  } catch (err) {
+    log(`!! [USB DIRECT] Lỗi gửi: ${err.message}`);
+    return false;
+  }
+}
+
+// ================= KẾT NỐI BRIDGE (WEBSOCKET DỰ PHÒNG) =================
+let ws;
+const $ = id => document.getElementById(id);
+let lastLogLine = '';
+function log(s){
+  if (s === lastLogLine && s.startsWith('[MT]')) return;   // bo dong lap khi dang lai xe
+  lastLogLine = s;
+  const l = $('log'); l.textContent += s + '\n';
+  if (l.textContent.length > 60000) l.textContent = l.textContent.slice(-40000);
+  l.scrollTop = l.scrollHeight;
+}
+let lastNoBridgeLog = 0;
+function send(o){
+  if (ws && ws.readyState === 1) { ws.send(JSON.stringify(o)); return true; }
+  if (!directPort) {
+    if (Date.now() - lastNoBridgeLog > 3000) {
+      lastNoBridgeLog = Date.now();
+      log('!! Chưa kết nối USB (Hãy bấm nút Chọn Cổng USB ở Chế độ 1 hoặc chạy python serial_bridge.py ở Chế độ 2)');
+    }
+  }
+  return false;
+}
+function connectCom(){ send({cmd:'connect', port:$('port').value, baud:+$('baud').value}); }
+async function cmd(t, quiet){
+  if (!t) return;
+  // Ưu tiên 1: Kết nối trực tiếp qua Web Serial API (Không cần Python)
+  if (directPort && directPort.writable) {
+    const ok = await writeDirectSerial(t + '\n');
+    if (!quiet) log(ok ? '>> ' + t : '!! Lỗi gửi');
+    return;
+  }
+  // Ưu tiên 2: Cầu nối Python WebSocket (Cách cũ)
+  if (send({cmd:'send', data:t}) && quiet) {
+    quietSent.set(t, (quietSent.get(t) || 0) + 1);
+  }
+}
+const quietSent = new Map();   // lenh gui ngam -> so lan chua nhan phan hoi (khong in ra log)
+function setCom(ok, msg){ $('st').textContent = 'COM: ' + msg; $('st').className = 'st ' + (ok ? 'ok' : 'err'); }
+
+function openWs(){
+  ws = new WebSocket('ws://127.0.0.1:8765');
+  ws.onopen = () => { $('ws').textContent='(WS: đã kết nối)'; $('ws').className='st ok'; };
+  ws.onclose = () => { $('ws').textContent='(WS: mất kết nối, thử lại...)'; $('ws').className='st err'; setTimeout(openWs, 2000); };
+  ws.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'ports') {
+      $('port').innerHTML = m.ports.map(p => `<option value="${p.port}">${p.port} - ${p.desc}</option>`).join('');
+      if (m.current) { $('port').value = m.current; setCom(true, m.current); }
+    } else if (m.type === 'status') {
+      setCom(m.connected, m.connected ? `${m.port} (${m.baud})` : 'chưa kết nối');
+      log('## ' + m.msg);
+      // Mega reset khi mo cong -> doi khoi dong xong roi gui cau hinh tang/giam toc
+      if (m.connected) setTimeout(sendAccel, 4000);
+    } else if (m.type === 'data') {
+      log(m.line);
+    } else if (m.type === 'sent') {
+      const q = quietSent.get(m.data);
+      if (m.ok && q) { if (q > 1) quietSent.set(m.data, q - 1); else quietSent.delete(m.data); return; }
+      log(m.ok ? '>> ' + m.data : '!! ' + m.msg);
+    } else if (m.type === 'error') {
+      log('!! ' + m.msg);
+    }
+  };
+}
+openWs();
+
+// ================= TEST TỪNG ĐỘNG CƠ =================
+let keepAlive = null, lastMotor = null;
+const v = () => +$('spd').value;
+function motor(l, r){
+  lastMotor = `m ${l} ${r}`;
+  cmd(lastMotor);
+  $('sl').value = l; $('vl').textContent = l; $('sr').value = r; $('vr').textContent = r;
+  // Gui lai lenh moi 5s de khong bi watchdog 15s tren Arduino dung xe
+  clearInterval(keepAlive);
+  if (l || r) keepAlive = setInterval(() => cmd(lastMotor, true), 5000);
+}
+function motorApply(){
+  let l = +$('sl').value, r = +$('sr').value;
+  if ($('lock').checked) { r = l; }
+  motor(l, r);
+}
+function motorStop(){
+  clearInterval(keepAlive); lastMotor = null; cmd('ms');
+  $('sl').value = $('sr').value = 0; $('vl').textContent = $('vr').textContent = '0';
+}
+$('sl').addEventListener('input', () => { if ($('lock').checked) { $('sr').value = $('sl').value; $('vr').textContent = $('sl').value; } });
+
+// ================= LÁI XE BẰNG BÀN PHÍM / D-PAD =================
+// Moi 150ms gui "m <trai> <phai> 500": neu mat lenh (dut WS, tab mat focus...) Arduino tu dung sau 0.5s.
+const TICK_MS = 150, HOLD_MS = 500;
+const held = new Set();          // cac huong dang giu: up/down/left/right
+let teleMoving = false, slowMode = false;
+
+const KEYMAP = {
+  KeyW:'up', ArrowUp:'up', KeyS:'down', ArrowDown:'down',
+  KeyA:'left', ArrowLeft:'left', KeyD:'right', ArrowRight:'right',
+  KeyQ:['up','left'], KeyE:['up','right'], KeyZ:['down','left'], KeyC:['down','right']
+};
+const PADMAP = { up:['up'], down:['down'], left:['left'], right:['right'],
+                 ql:['up','left'], qr:['up','right'], zl:['down','left'], zr:['down','right'] };
+const padHeld = new Map();       // pointerId -> danh sach huong
+const keyHeld = new Map();       // key code -> danh sach huong
+
+function rebuildHeld(){
+  held.clear();
+  for (const dirs of keyHeld.values()) dirs.forEach(d => held.add(d));
+  for (const dirs of padHeld.values()) dirs.forEach(d => held.add(d));
+  // to mau nut tren D-pad
+  document.querySelectorAll('#pad button[data-k]').forEach(b => {
+    const dirs = PADMAP[b.dataset.k];
+    b.classList.toggle('on', dirs.length === held.size && dirs.every(d => held.has(d)));
+  });
+}
+
+function computeLR(){
+  const f = (held.has('up') ? 1 : 0) - (held.has('down') ? 1 : 0);
+  const t = (held.has('right') ? 1 : 0) - (held.has('left') ? 1 : 0);
+  const k = slowMode ? 0.5 : 1;
+  const spd = +$('spd').value * k, trn = +$('trn').value * k, crv = +$('crv').value / 100;
+  let l = 0, r = 0;
+  if (f !== 0) {                       // tien/lui, co the kem re: giam banh phia trong
+    l = f * spd; r = f * spd;
+    if (t > 0) r *= (1 - crv);         // re phai -> banh phai cham lai
+    if (t < 0) l *= (1 - crv);         // re trai -> banh trai cham lai
+  } else if (t !== 0) {                // xoay tai cho
+    l = t * trn; r = -t * trn;
+  }
+  const c = x => Math.max(-255, Math.min(255, Math.round(x)));
+  return [c(l), c(r)];
+}
+
+function teleTick(){
+  const [l, r] = computeLR();
+  $('cur').textContent = `TRÁI ${l} | PHẢI ${r}`;
+  if (l || r) {
+    cmd(`m ${l} ${r} ${HOLD_MS}`, true);
+    teleMoving = true;
+  } else if (teleMoving) {
+    // Nha nut -> giam toc tu tu ve 0 (Arduino tu ramp roi dong thang)
+    teleMoving = false;
+    cmd('m 0 0', true);
+  }
+}
+setInterval(teleTick, TICK_MS);
+
+// Gui toc do tang/giam toc xuong Arduino
+function sendAccel(){ cmd(`macc ${$('acc').value} ${$('dec').value}`); }
+
+// DUNG GAP (nut DUNG do / phim Space): cat dong co ngay
+function teleStop(clearAll){
+  if (clearAll) { keyHeld.clear(); padHeld.clear(); rebuildHeld(); }
+  teleMoving = false;
+  cmd('ms', true);
+  $('cur').textContent = 'TRÁI 0 | PHẢI 0';
+}
+
+function teleToggle(){
+  const on = $('teleEn').checked;
+  $('tele').textContent = on ? 'BẬT' : 'TẮT';
+  $('tele').className = on ? 'on' : '';
+  if (!on) { keyHeld.clear(); rebuildHeld(); }
+  document.activeElement && document.activeElement.blur();   // tranh phim mui ten lam doi thanh truot
+}
+
+// --- Ban phim ---
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' && e.target.type === 'text') return;
+  if (e.code === 'Space') { e.preventDefault(); clearInterval(keepAlive); teleStop(true); return; }
+  slowMode = e.shiftKey;
+  if (!$('teleEn').checked) return;
+  const m = KEYMAP[e.code];
+  if (!m) return;
+  e.preventDefault();
+  if (!keyHeld.has(e.code)) { keyHeld.set(e.code, [].concat(m)); rebuildHeld(); teleTick(); }
+});
+document.addEventListener('keyup', e => {
+  slowMode = e.shiftKey;
+  if (keyHeld.delete(e.code)) { rebuildHeld(); teleTick(); }
+});
+// Mat focus (alt-tab, click ra ngoai, an tab...) -> tha het phim, xe giam toc em ve 0
+function releaseAll(){ if (keyHeld.size || padHeld.size) { keyHeld.clear(); padHeld.clear(); rebuildHeld(); teleTick(); } }
+window.addEventListener('blur', releaseAll);
+document.addEventListener('visibilitychange', () => { if (document.hidden) releaseAll(); });
+
+// --- D-pad tren man hinh (chuot / cam ung) ---
+document.querySelectorAll('#pad button[data-k]').forEach(b => {
+  b.addEventListener('pointerdown', e => {
+    e.preventDefault(); b.setPointerCapture(e.pointerId);
+    padHeld.set(e.pointerId, PADMAP[b.dataset.k]); rebuildHeld(); teleTick();
+  });
+  const up = e => { if (padHeld.delete(e.pointerId)) { rebuildHeld(); teleTick(); } };
+  b.addEventListener('pointerup', up);
+  b.addEventListener('pointercancel', up);
+  b.addEventListener('contextmenu', e => e.preventDefault());
+});
+</script>
+</body>
+</html>
