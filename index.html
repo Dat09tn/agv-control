@@ -356,6 +356,7 @@ for (let i = 1; i <= 16; i++) {
 // ================= KẾT NỐI TRỰC TIẾP (WEB SERIAL API) =================
 let directPort = null;
 let directReader = null;
+let writeQueue = Promise.resolve();
 
 if (window.location.protocol === 'file:') {
   const warn = $('file_protocol_warning');
@@ -411,31 +412,41 @@ async function toggleDirectSerial() {
 }
 
 async function disconnectDirectSerial() {
+  // 1. Chờ các lệnh ghi đang xếp hàng hoàn thành
+  try { await writeQueue; } catch (e) {}
+
+  // 2. Hủy đọc và giải phóng stream đọc sạch sẽ
   if (directReader) {
     try { await directReader.cancel(); } catch (e) {}
+    try { directReader.releaseLock(); } catch (e) {}
+    directReader = null;
   }
+
+  // 3. Đóng cổng Serial hoàn toàn
   if (directPort) {
-    try { await directPort.close(); } catch (e) {}
+    try {
+      await directPort.close();
+    } catch (e) {
+      console.warn("Lỗi close Serial:", e);
+    }
+    directPort = null;
   }
-  directPort = null;
-  directReader = null;
+
   setDirectStatus(false, 'Chưa kết nối');
   log('## [USB DIRECT] Đã ngắt kết nối USB.');
 }
 
 async function readDirectLoop() {
-  let textDecoder = new TextDecoderStream();
-  let readableStreamClosed = directPort.readable.pipeTo(textDecoder.writable);
-  let reader = textDecoder.readable.getReader();
-  directReader = reader;
+  const decoder = new TextDecoder();
   let buffer = '';
 
   try {
+    directReader = directPort.readable.getReader();
     while (true) {
-      const { value, done } = await reader.read();
+      const { value, done } = await directReader.read();
       if (done) break;
       if (value) {
-        buffer += value;
+        buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
         buffer = lines.pop();
         for (const line of lines) {
@@ -450,19 +461,29 @@ async function readDirectLoop() {
       disconnectDirectSerial();
     }
   } finally {
-    try { reader.releaseLock(); } catch(e){}
-    await readableStreamClosed.catch(() => {});
+    if (directReader) {
+      try { directReader.releaseLock(); } catch (e) {}
+      directReader = null;
+    }
   }
 }
 
 async function writeDirectSerial(str) {
   if (!directPort || !directPort.writable) return false;
-  try {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(str);
-    const writer = directPort.writable.getWriter();
-    await writer.write(data);
-    writer.releaseLock();
+  writeQueue = writeQueue.then(async () => {
+    try {
+      const encoder = new TextEncoder();
+      const writer = directPort.writable.getWriter();
+      await writer.write(encoder.encode(str));
+      writer.releaseLock();
+      return true;
+    } catch (err) {
+      log(`!! [USB DIRECT] Lỗi gửi: ${err.message}`);
+      return false;
+    }
+  });
+  return writeQueue;
+}
     return true;
   } catch (err) {
     log(`!! [USB DIRECT] Lỗi gửi: ${err.message}`);
