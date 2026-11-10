@@ -333,6 +333,9 @@
 <div id="log"></div>
 
 <script>
+// Khai báo bộ chọn DOM trước tiên
+const $ = id => document.getElementById(id);
+
 // Khởi tạo 16 đèn LED cảm biến
 const sensorLedBar = $('sensor_led_bar');
 for (let i = 1; i <= 16; i++) {
@@ -461,7 +464,6 @@ async function writeDirectSerial(str) {
 
 // ================= KẾT NỐI BRIDGE (WEBSOCKET DỰ PHÒNG) =================
 let ws;
-const $ = id => document.getElementById(id);
 let lastLogLine = '';
 
 // PARSER TELEMETRY TỪ MEGA2560 (10Hz)
