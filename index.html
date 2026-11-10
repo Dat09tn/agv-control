@@ -484,12 +484,6 @@ async function writeDirectSerial(str) {
   });
   return writeQueue;
 }
-    return true;
-  } catch (err) {
-    log(`!! [USB DIRECT] Lỗi gửi: ${err.message}`);
-    return false;
-  }
-}
 
 // ================= KẾT NỐI BRIDGE (WEBSOCKET DỰ PHÒNG) =================
 let ws;
