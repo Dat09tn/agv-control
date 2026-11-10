@@ -108,6 +108,11 @@
     border-color: #e0f7fa;
     box-shadow: 0 0 10px #00e5ff, 0 0 4px #fff;
   }
+  #led_uplimit.active, #led_dwlimit.active {
+    background: #00e676 !important;
+    border-color: #b9f6ca !important;
+    box-shadow: 0 0 14px #00e676, 0 0 6px #fff !important;
+  }
   .led-num { font-size: 10px; color: #888; font-family: Consolas, monospace; }
 
   /* Status badge */
@@ -266,13 +271,13 @@
 
       <!-- Nút điều khiển Nâng / Hạ / Dừng -->
       <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">
-        <button style="flex:1; background:#00897b; color:#fff; font-weight:bold; padding:10px;" onclick="cmd('hasp up')">
+        <button style="flex:1; background:#00897b; color:#fff; font-weight:bold; padding:10px;" onclick="triggerHasp('up')">
           🔼 NÂNG MÓC
         </button>
-        <button style="flex:1; background:#ef6c00; color:#fff; font-weight:bold; padding:10px;" onclick="cmd('hasp down')">
+        <button style="flex:1; background:#ef6c00; color:#fff; font-weight:bold; padding:10px;" onclick="triggerHasp('down')">
           🔽 HẠ MÓC
         </button>
-        <button style="flex:1; background:#d32f2f; color:#fff; font-weight:bold; padding:10px;" onclick="cmd('hasp stop')">
+        <button style="flex:1; background:#d32f2f; color:#fff; font-weight:bold; padding:10px;" onclick="triggerHasp('stop')">
           ⏹ DỪNG MÓC
         </button>
       </div>
@@ -280,12 +285,12 @@
       <!-- Đèn trạng thái cảm biến hành trình -->
       <div style="margin-top:10px; background:#181a1f; padding:8px 12px; border-radius:6px; display:flex; justify-content:space-around; align-items:center;">
         <div style="display:flex; align-items:center; gap:8px;">
-          <div id="led_uplimit" class="led-dot" style="width:16px; height:16px; border-radius:50%;"></div>
-          <span style="font-size:12.5px;">CB Giới Hạn <b>TRÊN</b> (Pin 12)</span>
+          <div id="led_uplimit" class="led-dot" style="width:18px; height:18px; border-radius:50%;"></div>
+          <span id="txt_uplimit" style="font-size:12.5px;">CB Giới Hạn <b>TRÊN</b> (Pin 12)</span>
         </div>
         <div style="display:flex; align-items:center; gap:8px;">
-          <div id="led_dwlimit" class="led-dot" style="width:16px; height:16px; border-radius:50%;"></div>
-          <span style="font-size:12.5px;">CB Giới Hạn <b>DƯỚI</b> (Pin 13)</span>
+          <div id="led_dwlimit" class="led-dot" style="width:18px; height:18px; border-radius:50%;"></div>
+          <span id="txt_dwlimit" style="font-size:12.5px;">CB Giới Hạn <b>DƯỚI</b> (Pin 13)</span>
         </div>
       </div>
     </fieldset>
@@ -391,7 +396,10 @@ async function toggleDirectSerial() {
     await directPort.open({ baudRate: baudRate });
     setDirectStatus(true, `Đang kết nối trực tiếp (${baudRate} baud)`);
     log(`## [USB DIRECT] Đã mở cổng USB thành công (${baudRate} baud)`);
-    setTimeout(sendAccel, 3500);
+    setTimeout(() => {
+      sendAccel();
+      cmd('telem on', true);
+    }, 3500);
     readDirectLoop();
   } catch (err) {
     if (err.name !== 'NotFoundError') {
@@ -466,9 +474,50 @@ async function writeDirectSerial(str) {
 let ws;
 let lastLogLine = '';
 
-// PARSER TELEMETRY TỪ MEGA2560 (10Hz)
+// ================= ĐIỀU KHIỂN & ĐỒNG HỒ MÓC KÉO (HASP) =================
+let webHaspTimer = null;
+let webHaspStart = 0;
+
+function startLocalHaspTimer(dir) {
+  clearInterval(webHaspTimer);
+  webHaspStart = Date.now();
+  $('hasp_time').textContent = '0.00 s';
+  const badge = $('hasp_badge');
+  if (badge) {
+    badge.textContent = (dir === 'up' ? 'ĐANG NÂNG ▲' : 'ĐANG HẠ ▼');
+    badge.className = 'badge busy';
+  }
+  webHaspTimer = setInterval(() => {
+    const sec = ((Date.now() - webHaspStart) / 1000).toFixed(2);
+    $('hasp_time').textContent = sec + ' s';
+  }, 40);
+}
+
+function stopLocalHaspTimer() {
+  if (webHaspTimer) {
+    clearInterval(webHaspTimer);
+    webHaspTimer = null;
+  }
+}
+
+function triggerHasp(action) {
+  if (action === 'up') {
+    startLocalHaspTimer('up');
+    cmd('hasp up');
+  } else if (action === 'down') {
+    startLocalHaspTimer('down');
+    cmd('hasp down');
+  } else if (action === 'stop') {
+    stopLocalHaspTimer();
+    const badge = $('hasp_badge');
+    if (badge) { badge.textContent = 'ĐANG DỪNG'; badge.className = 'badge'; }
+    cmd('hasp stop');
+  }
+}
+
+// PARSER TELEMETRY TỪ MEGA2560 (5Hz)
 function parseTelemetry(s) {
-  // Format: [TELEM] BITS=0000000000000000 HEX=0000 UP=1 DW=1 HASP=0 HSEC=0.00 DIR=OFF MUS=OFF
+  // Format: [TELEM] BITS=0000000000000000 HEX=0000 UP=1 DW=1 HASP=... HSEC=0.00 DIR=OFF MUS=OFF
   const getVal = key => {
     const m = s.match(new RegExp(key + '=([^ ]+)'));
     return m ? m[1] : null;
@@ -488,11 +537,8 @@ function parseTelemetry(s) {
     for (let i = 0; i < 16; i++) {
       const el = $(`led_ss_${i + 1}`);
       if (el) {
-        if (bits[i] === '1') {
-          el.classList.add('active');
-        } else {
-          el.classList.remove('active');
-        }
+        if (bits[i] === '1') el.classList.add('active');
+        else el.classList.remove('active');
       }
     }
   }
@@ -502,7 +548,7 @@ function parseTelemetry(s) {
   }
 
   // 2. Cảm biến hành trình & Móc kéo
-  // Uplimit / Dwlimit là Active LOW: chạm cảm biến -> 0 (Active), không chạm -> 1
+  // Uplimit / Dwlimit: Active LOW: 0 = chạm cữ (Active), 1 = mở (chưa chạm)
   const upActive = (up === '0');
   const dwActive = (dw === '0');
   const upLed = $('led_uplimit');
@@ -515,25 +561,35 @@ function parseTelemetry(s) {
     if (dwActive) dwLed.classList.add('active');
     else dwLed.classList.remove('active');
   }
+  const upTxt = $('txt_uplimit');
+  const dwTxt = $('txt_dwlimit');
+  if (upTxt) upTxt.innerHTML = upActive ? 'CB TRÊN: <b style="color:#00e676">ĐÃ CHẠM</b>' : 'CB Giới Hạn <b>TRÊN</b> (Pin 12)';
+  if (dwTxt) dwTxt.innerHTML = dwActive ? 'CB DƯỚI: <b style="color:#00e676">ĐÃ CHẠM</b>' : 'CB Giới Hạn <b>DƯỚI</b> (Pin 13)';
 
   const haspBadge = $('hasp_badge');
   if (haspBadge) {
-    if (hasp === '1') {
+    if (hasp === 'UP' || hasp === '1') {
       haspBadge.textContent = 'ĐANG NÂNG ▲';
       haspBadge.className = 'badge busy';
-    } else if (hasp === '2') {
+    } else if (hasp === 'DOWN' || hasp === '2') {
       haspBadge.textContent = 'ĐANG HẠ ▼';
       haspBadge.className = 'badge busy';
-    } else if (hasp === '3') {
-      haspBadge.textContent = 'ĐÃ CHẠM GIỚI HẠN ✔';
+    } else if (hasp === 'AT_UP') {
+      haspBadge.textContent = 'Ở VỊ TRÍ TRÊN ✔';
       haspBadge.className = 'badge active';
-    } else {
+      stopLocalHaspTimer();
+    } else if (hasp === 'AT_DOWN') {
+      haspBadge.textContent = 'Ở VỊ TRÍ DƯỚI ✔';
+      haspBadge.className = 'badge active';
+      stopLocalHaspTimer();
+    } else if (!webHaspTimer) {
       haspBadge.textContent = 'ĐANG DỪNG';
       haspBadge.className = 'badge';
     }
   }
 
-  if (hsec) {
+  // Chỉ lấy hsec từ Arduino nếu web không đang tự chạy đồng hồ đếm ngược
+  if (hsec && !webHaspTimer) {
     $('hasp_time').textContent = `${parseFloat(hsec).toFixed(2)} s`;
   }
 
@@ -577,6 +633,43 @@ function log(s){
   if (s.startsWith('[TELEM]')) {
     parseTelemetry(s);
     return;
+  }
+  // Bắt các thông báo trạng thái móc kéo trực tiếp từ Arduino
+  if (s.startsWith('[HASP]')) {
+    const mDone = s.match(/\[HASP\] (UP|DOWN)_DONE t=([0-9.]+)s/);
+    if (mDone) {
+      stopLocalHaspTimer();
+      const dir = mDone[1];
+      const dur = parseFloat(mDone[2]).toFixed(2);
+      $('hasp_time').textContent = dur + ' s';
+      const badge = $('hasp_badge');
+      if (badge) {
+        badge.textContent = (dir === 'UP' ? 'NÂNG XONG (CHẠM CỮ) ✔' : 'HẠ XONG (CHẠM CỮ) ✔');
+        badge.className = 'badge active';
+      }
+      if (dir === 'UP') {
+        $('led_uplimit').classList.add('active');
+        $('led_dwlimit').classList.remove('active');
+        if ($('txt_uplimit')) $('txt_uplimit').innerHTML = 'CB TRÊN: <b style="color:#00e676">ĐÃ CHẠM</b>';
+      } else {
+        $('led_dwlimit').classList.add('active');
+        $('led_uplimit').classList.remove('active');
+        if ($('txt_dwlimit')) $('txt_dwlimit').innerHTML = 'CB DƯỚI: <b style="color:#00e676">ĐÃ CHẠM</b>';
+      }
+    } else if (s.includes('UP_START')) {
+      startLocalHaspTimer('up');
+      $('led_uplimit').classList.remove('active');
+    } else if (s.includes('DOWN_START')) {
+      startLocalHaspTimer('down');
+      $('led_dwlimit').classList.remove('active');
+    } else if (s.includes('STOPPED') || s.includes('TIMEOUT')) {
+      stopLocalHaspTimer();
+      const badge = $('hasp_badge');
+      if (badge) {
+        badge.textContent = s.includes('TIMEOUT') ? 'HẾT HÀNH TRÌNH (15s)' : 'ĐANG DỪNG';
+        badge.className = s.includes('TIMEOUT') ? 'badge alert' : 'badge';
+      }
+    }
   }
   if (s === lastLogLine && s.startsWith('[MT]')) return;
   lastLogLine = s;
@@ -627,7 +720,12 @@ function openWs(){
     } else if (m.type === 'status') {
       setCom(m.connected, m.connected ? `${m.port} (${m.baud})` : 'chưa kết nối');
       log('## ' + m.msg);
-      if (m.connected) setTimeout(sendAccel, 4000);
+      if (m.connected) {
+        setTimeout(() => {
+          sendAccel();
+          cmd('telem on', true);
+        }, 4000);
+      }
     } else if (m.type === 'data') {
       log(m.line);
     } else if (m.type === 'sent') {
